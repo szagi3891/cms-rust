@@ -1,6 +1,9 @@
 #[macro_use]
 extern crate diesel;
 
+#[macro_use]
+extern crate diesel_migrations;
+
 mod pool;
 mod errors;
 mod data_access;
@@ -9,7 +12,6 @@ mod models;
 mod handlers;
 mod routes;
 
-use std::env;
 use warp::{Filter};
 use log::{info};
 
@@ -17,8 +19,8 @@ use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Builder};
 use crate::errors::{AppError};
 use crate::pool::AsyncPool;
-
-use dotenv::dotenv;
+use serde::{Serialize, Deserialize};
+use std::net::Ipv4Addr;
 
 fn pg_pool(db_url: &str) -> AsyncPool {
     let manager = ConnectionManager::<PgConnection>::new(db_url);
@@ -27,28 +29,44 @@ fn pg_pool(db_url: &str) -> AsyncPool {
         .max_size(10)
         .build(manager).unwrap();
     
-    // let manager = ConnectionManager::<PgConnection>::new(db_url);
-    // let pool = Pool::new(manager).expect("Postgres connection pool could not be created");
-
     AsyncPool::new(pool, 10)
+}
+
+
+diesel_migrations::embed_migrations!("./migrations");
+
+#[derive(Serialize, Deserialize, Debug)]
+struct EnvConfigIn {
+    database_url: String,
+    http_host: Ipv4Addr,
+    http_port: u16,
 }
 
 #[tokio::main]
 async fn main() {
-    dotenv().ok();
-
-    if env::var_os("RUST_LOG").is_none() {
-        env::set_var("RUST_LOG", "info");
-    }
     pretty_env_logger::init();
 
-    let database_url = env::var("DATABASE_URL")
-        .expect("DATABASE_URL env not set");
+    let config = match envy::from_env::<EnvConfigIn>() {
+        Ok(config) => config,
+        Err(error) => panic!("Service started with invalid environment variables {:#?}", error)
+    };
 
-    let pg_pool = pg_pool(database_url.as_str());
+    let pg_pool = pg_pool(config.database_url.as_str());
 
-    // let routes = api_filters(pg_pool)
-    //     .recover(errors::handle_rejection);
+    let result = pg_pool.get(|connection| {
+        diesel_migrations::run_pending_migrations(connection)
+    }).await;
+
+    match result {
+        Ok(()) => {},
+        Err(err) => {
+            println!("error run migrations {:?}", err);
+            return;
+        }
+    };
+    
+    info!("Migrations ok");
+
 
     let customer_routes = routes::customer_routes(pg_pool)
         .recover(errors::handle_rejection);
@@ -57,12 +75,5 @@ async fn main() {
     info!("Starting server on port 3030...");
 
     // Start up the server...
-    warp::serve(customer_routes).run(([127, 0, 0, 1], 3000)).await;
-
-    // let db = db::init_db();
-    // let customer_routes = routes::customer_routes(db);
-
-    // warp::serve(customer_routes)
-    //     .run(([127, 0, 0, 1], 3000))
-    //     .await;
+    warp::serve(customer_routes).run((config.http_host, config.http_port)).await;
 }
