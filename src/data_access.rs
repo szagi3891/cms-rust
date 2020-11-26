@@ -1,8 +1,7 @@
 use diesel::prelude::*;
-use crate::models::{CustomerDTO, CreateOrUpdateCustomerDTO};
-use crate::errors::{AppError,ErrorType};
-use crate::handlers::{CreateOrUpdateCustomer};
-use crate::pool::AsyncPool;
+
+use crate::AsyncPool;
+use crate::models::{CustomerDTO, InsertableCustomerDTO};
 
 #[derive(Clone)]
 pub struct DBAccessManager {
@@ -16,85 +15,61 @@ impl DBAccessManager {
         }
     }
 
-    pub async fn list_customers(&self) -> Result<Vec<CustomerDTO>, AppError> {
+    pub async fn list_customers(&self) -> QueryResult<Vec<CustomerDTO>> {
         use super::schema::customers::dsl::*;
 
-        self.pool.get(move |connection| {
-            customers
-                .load(connection)
-                .map_err(|err| {
-                    AppError::from_diesel_err(err, "while listing customers")
-                })
-        }).await
+        self.pool.get(|connection|
+            customers.load(connection)
+        ).await
     }
 
-    pub async fn create_customer(&self, dto: CreateOrUpdateCustomerDTO) -> Result<CustomerDTO, AppError> {
+    pub async fn create_customer(&self, dto: InsertableCustomerDTO) -> QueryResult<CustomerDTO> {
         use super::schema::customers;
 
-        self.pool.get(move |connection| {
-                
+        self.pool.get(move |connection|
             diesel::insert_into(customers::table) // insert into customers table
                 .values(&dto) // use values from CreateCustomerDTO
+                .returning(customers::all_columns)
                 .get_result(connection) // execute query
-                .map_err(|err| {
-                    AppError::from_diesel_err(err, "while creating customer")
-                }) // if error occurred map it to AppError
-        }).await
+        ).await
     }
 
-    pub async fn update_customer(&self, customer_id: i64, updated_customer: CreateOrUpdateCustomer) -> Result<usize, AppError> {
+    pub async fn update_customer(&self, customer_id: i64, updated_customer: InsertableCustomerDTO) -> QueryResult<usize> {
         use super::schema::customers::dsl::*;
 
         self.pool.get(move |connection| {
-            
             let updated = diesel::update(customers)
                 .filter(id.eq(customer_id))
-                .set((
-                    first_name.eq(updated_customer.first_name),
-                    last_name.eq(updated_customer.last_name),
-                    email.eq(updated_customer.email),
-                    address.eq(updated_customer.address),
-                ))
-                .execute(connection)
-                .map_err(|err| {
-                    AppError::from_diesel_err(err, "while updating customer")
-                })?;
+                .set(updated_customer)
+                .execute(connection)?;
 
             if updated == 0 {
-                return Err(AppError::new("Customer not found", ErrorType::NotFound))
+                return Err(diesel::NotFound)
             }
-            return Ok(updated)
+            Ok(updated)
         }).await
     }
 
-    pub async fn delete_customer(&self, customer_id: i64) -> Result<usize, AppError> {
+    pub async fn delete_customer(&self, customer_id: i64) -> QueryResult<usize> {
         use super::schema::customers::dsl::*;
 
         self.pool.get(move |connection| {
-                
             let deleted = diesel::delete(customers.filter(id.eq(customer_id)))
-                .execute(connection)
-                .map_err(|err| {
-                    AppError::from_diesel_err(err, "while deleting customer")
-                })?;
+                .execute(connection)?;
 
             if deleted == 0 {
-                return Err(AppError::new("Customer not found", ErrorType::NotFound))
+                return Err(diesel::NotFound)
             }
-            return Ok(deleted)
+            Ok(deleted)
         }).await
     }
 
-    pub async fn get_customer(&self, customer_id: i64) -> Result<Vec<CustomerDTO>, AppError> {
+    pub async fn get_customer(&self, customer_id: i64) -> QueryResult<CustomerDTO> {
         use super::schema::customers::dsl::*;
 
-        self.pool.get(move |connection| {
-            customers
-                .filter(id.eq(customer_id))
-                .load(connection)
-                .map_err(|err| {
-                    AppError::from_diesel_err(err, "while listing customers")
-                })
-        }).await
+        self.pool.get(move |connection|
+            customers.find(customer_id)
+                .get_result(connection)
+        ).await
     }
 }

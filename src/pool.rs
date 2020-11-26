@@ -26,10 +26,9 @@ impl AsyncPool {
         let lock = self.semaphore.clone().acquire_owned().await;
 
         let pool = self.pool.clone();
-    
+
         let conn = tokio::task::spawn_blocking(move || {
-            let result = pool.get().unwrap();
-            result
+            pool.get().unwrap()
         }).await.unwrap();
 
         AsyncPoolConnection {
@@ -51,17 +50,12 @@ pub struct AsyncPoolConnection {
 
 impl AsyncPoolConnection {
     pub async fn deref<R: Send + 'static, F: Send + 'static>(self, exec: F) -> R where F: FnOnce(&PgConnection) -> R {
-        
+
         let exec_boxed = Box::new(exec);
 
-        let result = tokio::task::spawn_blocking(move || {
-
+        tokio::task::spawn_blocking(move || {
             let connection = &*self.conn;
-            let result = exec_boxed(connection);
-
-            result
-        }).await.unwrap();
-
-        result
+            exec_boxed(connection)
+        }).await.unwrap()
     }
 }

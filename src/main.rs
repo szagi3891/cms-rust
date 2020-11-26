@@ -2,21 +2,17 @@
 extern crate diesel;
 
 mod pool;
-mod errors;
 mod data_access;
 mod schema;
 mod models;
 mod handlers;
-mod routes;
 
 use std::env;
-use warp::{Filter};
-use log::{info};
-
+use actix_web::{middleware, App, HttpServer};
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
-use crate::errors::{AppError};
 use crate::pool::AsyncPool;
+use crate::data_access::DBAccessManager;
 
 use dotenv::dotenv;
 
@@ -24,11 +20,12 @@ fn pg_pool(db_url: &str) -> AsyncPool {
     let manager = ConnectionManager::<PgConnection>::new(db_url);
     let pool = Pool::new(manager).expect("Postgres connection pool could not be created");
 
-    AsyncPool::new(pool, 10)
+    AsyncPool::new(pool, num_cpus::get())
 }
 
-#[tokio::main]
-async fn main() {
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     dotenv().ok();
 
     if env::var_os("RUST_LOG").is_none() {
@@ -41,22 +38,25 @@ async fn main() {
 
     let pg_pool = pg_pool(database_url.as_str());
 
-    // let routes = api_filters(pg_pool)
-    //     .recover(errors::handle_rejection);
+    let db_manger = DBAccessManager::new(pg_pool);
 
-    let customer_routes = routes::customer_routes(pg_pool)
-        .recover(errors::handle_rejection);
+    let bind = "127.0.0.1:3000";
 
+    println!("Starting server at: {}", &bind);
 
-    info!("Starting server on port 3030...");
-
-    // Start up the server...
-    warp::serve(customer_routes).run(([127, 0, 0, 1], 3000)).await;
-
-    // let db = db::init_db();
-    // let customer_routes = routes::customer_routes(db);
-
-    // warp::serve(customer_routes)
-    //     .run(([127, 0, 0, 1], 3000))
-    //     .await;
+    // Start HTTP server
+    HttpServer::new(move || {
+        App::new()
+            // set up DB pool to be used with web::Data<Pool> extractor
+            .data(db_manger.clone())
+            .wrap(middleware::Logger::default())
+            .service(handlers::customers_list)
+            .service(handlers::get_customer)
+            .service(handlers::create_customer)
+            .service(handlers::update_customer)
+            .service(handlers::delete_customer)
+    })
+    .bind(&bind)?
+    .run()
+    .await
 }

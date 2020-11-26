@@ -1,90 +1,70 @@
-use serde::{Deserialize, Serialize};
-use crate::models::{CreateOrUpdateCustomerDTO};
-use crate::AppError;
+use actix_web::{
+    web::{Data, Path, Json},
+    get, post, put, delete,
+    error::{self, Error},
+};
+use diesel::NotFound;
+
+use crate::models::{CustomerDTO, InsertableCustomerDTO};
 use crate::data_access::DBAccessManager;
-use warp::{self, Reply, Rejection, reply, reject, http::StatusCode};
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct CreateOrUpdateCustomer {
-    pub first_name: String,
-    pub last_name: String,
-    pub email: String,
-    pub address: String,
-}
-
-impl CreateOrUpdateCustomer {
-    pub fn to_dto(&self) -> CreateOrUpdateCustomerDTO {
-        CreateOrUpdateCustomerDTO{
-            first_name: self.first_name.clone(),
-            last_name: self.last_name.clone(),
-            email: self.email.clone(),
-            address: self.address.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct IdResponse {
-    pub id: i64,
-}
-
-impl IdResponse {
-    pub fn new(id: i64) -> IdResponse {
-        IdResponse{id}
-    }
-}
-
-pub async fn list_customers(db_manager: DBAccessManager) -> Result<impl Reply, Rejection> {
+#[get("/customers")]
+pub async fn customers_list(db_manager: Data<DBAccessManager>) -> Result<Json<Vec<CustomerDTO>>, Error> {
     log::info!("handling list of customers");
 
     let result = db_manager.list_customers().await;
-    respond(result, StatusCode::OK)
+
+    result
+        .map(Json)
+        .map_err(|e| error::ErrorInternalServerError(e.to_string()))
 }
 
-pub async fn create_customer(db_manager: DBAccessManager, new_customer: CreateOrUpdateCustomer) -> Result<impl Reply, Rejection> {
-
+#[post("/customers")]
+pub async fn create_customer(db_manager: Data<DBAccessManager>, new_customer: Json<InsertableCustomerDTO>) -> Result<Json<CustomerDTO>, Error> {
     log::info!("handling add customer");
 
-    let create_customer_dto = new_customer.to_dto();
+    let dto = db_manager.create_customer(new_customer.clone()).await;
 
-    let id_response = db_manager.create_customer(create_customer_dto).await.map(|customer|
-        { IdResponse::new(customer.guid) }
-    );
-
-    respond(id_response, StatusCode::CREATED)
-
+    dto
+        .map(Json)
+        .map_err(|e| error::ErrorInternalServerError(e.to_string()))
 }
 
-pub async fn get_customer(customer_id: i64, db_manager: DBAccessManager) -> Result<impl Reply, Rejection> {
+#[get("/customers/{id}")]
+pub async fn get_customer(customer_id: Path<i64>, db_manager: Data<DBAccessManager>) -> Result<Json<CustomerDTO>, Error> {
     log::info!("handling delete customer");
 
-    let result = db_manager.get_customer(customer_id).await;
-    respond(result, StatusCode::OK)
+    let result = db_manager.get_customer(*customer_id).await;
+
+    result
+        .map(Json)
+        .map_err(|e| match e {
+            NotFound => error::ErrorNotFound("Not Found"),
+            e => error::ErrorInternalServerError(e.to_string()),
+        })
 }
 
-pub async fn update_customer(customer_id: i64, db_manager: DBAccessManager, updated_customer: CreateOrUpdateCustomer) -> Result<impl Reply, Rejection> {
+#[put("/customers/{id}")]
+pub async fn update_customer(customer_id: Path<i64>, db_manager: Data<DBAccessManager>, updated_customer: Json<InsertableCustomerDTO>) -> Result<Json<usize>, Error> {
     log::info!("handling update customer");
 
-    let response = db_manager.update_customer(customer_id, updated_customer).await;
-    respond(response, StatusCode::OK)
+    let response = db_manager.update_customer(*customer_id, updated_customer.clone()).await;
+
+    response
+        .map(Json)
+        .map_err(|e| error::ErrorInternalServerError(e.to_string()))
 }
 
-pub async fn delete_customer(customer_id: i64, db_manager: DBAccessManager) -> Result<impl Reply, Rejection> {
+#[delete("/customers/{id}")]
+pub async fn delete_customer(customer_id: Path<i64>, db_manager: Data<DBAccessManager>) -> Result<Json<usize>, Error> {
     log::info!("handling delete customer");
 
-    let result = db_manager.delete_customer(customer_id).await.map(|_| -> () {()});
-    respond(result, StatusCode::NO_CONTENT)
-}
+    let result = db_manager.delete_customer(*customer_id).await;
 
-
-fn respond<T: Serialize>(result: Result<T, AppError>, status: StatusCode) -> Result<impl Reply, Rejection> {
-    match result {
-        Ok(response) => {
-            Ok(reply::with_status(reply::json(&response), status))
-        }
-        Err(err) => {
-            log::error!("Error while trying to respond: {}", err.to_string());
-            Err(reject::custom(err))
-        }
-    }
+    result
+        .map(Json)
+        .map_err(|e| match e {
+            NotFound => error::ErrorNotFound("Not Found"),
+            e => error::ErrorInternalServerError(e.to_string()),
+        })
 }
